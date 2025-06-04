@@ -1,151 +1,63 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import requests
+import matplotlib.pyplot as plt
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Configuración general
+st.set_page_config(page_title="Presupuesto Público 2015", layout="centered")
+st.title("📊 Ley de Presupuestos del Sector Público - Año 2015")
+st.markdown("Visualización interactiva por **Partida** y **Subtitulo** del presupuesto público.")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Conexión con la API
+url = "https://datos.gob.cl/api/3/action/datastore_search?resource_id=372b0680-d5f0-4d53-bffa-7997cf6e6512&limit=1000"
+response = requests.get(url)
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+if response.status_code == 200:
+    data = response.json()
+    records = data['result']['records']
+    df = pd.DataFrame(records)
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+    # Mostrar vista previa
+    st.write("### Vista previa de los primeros 10 registros:")
+    st.dataframe(df.head(10), use_container_width=True)
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    # Limpieza de datos
+    df['Monto Pesos'] = pd.to_numeric(df['Monto Pesos'], errors='coerce')
+    df = df[df['Monto Pesos'] > 0]
+    df = df.dropna(subset=['Partida', 'Subtitulo'])
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+    # Filtro por Partida
+    partidas = sorted(df['Partida'].unique())
+    partida_seleccionada = st.selectbox("Selecciona una Partida:", partidas)
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+    # Agrupar y ordenar por Subtitulo
+    df_filtrado = df[df['Partida'] == partida_seleccionada]
+    resumen = df_filtrado.groupby('Subtitulo')['Monto Pesos'].sum().reset_index()
+    resumen = resumen.sort_values(by='Monto Pesos', ascending=False)
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    # Slider para cantidad de subtítulos
+    top_n = st.slider("¿Cuántos subtítulos quieres mostrar?", 5, min(20, len(resumen)), 10)
+    resumen_top = resumen.head(top_n)
 
-    return gdp_df
+    # Mostrar tabla de resumen
+    st.subheader(f"Subtítulos con mayor presupuesto (Partida {partida_seleccionada})")
+    st.dataframe(resumen_top, use_container_width=True)
 
-gdp_df = get_gdp_data()
+    # Gráfico de línea
+    st.subheader("Visualización del presupuesto por Subtitulo (línea)")
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(resumen_top['Subtitulo'], resumen_top['Monto Pesos'], marker='o', linestyle='-', color='royalblue')
+    ax.set_xlabel("Subtitulo")
+    ax.set_ylabel("Monto en Pesos")
+    ax.set_title(f"Top {top_n} Subtítulos - Partida {partida_seleccionada}")
+    plt.xticks(rotation=45)
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+    # Etiquetas encima de los puntos
+    for i, row in resumen_top.iterrows():
+        ax.text(i, row['Monto Pesos'] + max(resumen_top['Monto Pesos']) * 0.02,
+                f"{int(row['Monto Pesos']):,}", ha='center', fontsize=8)
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+    st.pyplot(fig)
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+else:
+    st.error(f"Error al acceder a la API: {response.status_code}")
